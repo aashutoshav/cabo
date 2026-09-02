@@ -97,6 +97,20 @@ the swap may be between two other players entirely, and it is optional. Powers
 fire only when you draw from the deck and discard without keeping — never off a
 card taken from the discard pile, which must be swapped in.
 
+**Memory mode — on by default, and this is real Cabo.** Any card you see (the
+two opening peeks, a spy, a queen's look, a snap flip) stays visible for three
+seconds and then turns back over; after that, remembering it is your problem.
+The opening peeks hold until the whole table is ready, so everyone's three
+seconds start together.
+
+Expiry is enforced on the server: once a sighting lapses the card stops being
+sent to that player at all, so it cannot be recovered from devtools. The client
+runs the countdown locally as well, purely so the flip-back is crisp.
+
+The host can turn it off between rounds, which gives **assist mode** — the
+version where you don't have to remember your cards, and everything you have
+seen stays face up. The UI says so plainly while it is active.
+
 **Snapping.** Any player, any time, may snap a card matching the top discard's
 rank. Kings match kings regardless of colour. The window opens when a card
 lands face up and shuts when the next player starts their turn; chains are
