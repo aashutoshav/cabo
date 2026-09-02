@@ -23,6 +23,7 @@ import {
   HAND_SIZE,
   INITIAL_PEEKS,
   MAX_PLAYERS,
+  REVEAL_MS,
   SNAP_PENALTY_CARDS,
   TARGET_SCORE,
 } from "./types";
@@ -72,22 +73,63 @@ export function canSnapNow(s: GameState): boolean {
   return s.phase === "playing" && s.snapOpen && !isSnapSuspended(s);
 }
 
-function learn(s: GameState, playerId: string, cardId: string): void {
+function learn(s: GameState, playerId: string, cardId: string, now: number): void {
   const known = s.knowledge[playerId];
-  if (!known) {
-    s.knowledge[playerId] = [cardId];
-  } else if (!known.includes(cardId)) {
-    known.push(cardId);
-  }
+  if (!known) s.knowledge[playerId] = { [cardId]: now };
+  else known[cardId] = now;
 }
 
 /** A card flipped face up for a snap attempt is seen by the whole table. */
-function learnAll(s: GameState, cardId: string): void {
-  for (const p of s.players) learn(s, p.id, cardId);
+function learnAll(s: GameState, cardId: string, now: number): void {
+  for (const p of s.players) learn(s, p.id, cardId, now);
 }
 
-export function knows(s: GameState, playerId: string, cardId: string): boolean {
-  return s.knowledge[playerId]?.includes(cardId) ?? false;
+/** Whether this player has seen the card at all this round, expiry aside. */
+export function hasEverSeen(s: GameState, playerId: string, cardId: string): boolean {
+  return s.knowledge[playerId]?.[cardId] !== undefined;
+}
+
+/**
+ * In memory mode a sighting lapses after REVEAL_MS, and the card stops being
+ * sent to that player at all. In assist mode sightings never lapse.
+ */
+export function knows(s: GameState, playerId: string, cardId: string, now: number): boolean {
+  const seenAt = s.knowledge[playerId]?.[cardId];
+  if (seenAt === undefined) return false;
+  if (!s.memoryMode) return true;
+  // Nothing lapses while the table is still peeking; the clock starts together.
+  if (s.phase === "peek") return true;
+  return now - seenAt < REVEAL_MS;
+}
+
+/** Milliseconds until this sighting lapses, or null if it never will. */
+export function revealRemaining(
+  s: GameState,
+  playerId: string,
+  cardId: string,
+  now: number,
+): number | null {
+  if (!s.memoryMode) return null;
+  const seenAt = s.knowledge[playerId]?.[cardId];
+  if (seenAt === undefined) return null;
+  if (s.phase === "peek") return null;
+  return Math.max(0, seenAt + REVEAL_MS - now);
+}
+
+/**
+ * When the next live sighting lapses, so the room can re-push views at exactly
+ * the moment a card should flip back over.
+ */
+export function nextRevealExpiry(s: GameState, now: number): number | null {
+  if (!s.memoryMode || s.phase === "peek") return null;
+  let earliest: number | null = null;
+  for (const seen of Object.values(s.knowledge)) {
+    for (const seenAt of Object.values(seen)) {
+      const at = seenAt + REVEAL_MS;
+      if (at > now && (earliest === null || at < earliest)) earliest = at;
+    }
+  }
+  return earliest;
 }
 
 function log(s: GameState, text: string, priv?: string[]): void {
@@ -148,6 +190,8 @@ export function createGame(seed: number): GameState {
     snapOpen: false,
     initialPeeks: {},
     knowledge: {},
+    // Real Cabo by default: you look, then you remember.
+    memoryMode: true,
     log: [],
     nextLogId: 1,
     roundNumber: 0,
@@ -184,7 +228,7 @@ export function startRound(state: GameState): ApplyResult {
     p.slots = [];
     p.lastRoundScore = null;
     s.initialPeeks[p.id] = 0;
-    s.knowledge[p.id] = [];
+    s.knowledge[p.id] = {};
     for (let i = 0; i < HAND_SIZE; i++) {
       p.slots.push(s.deck.pop() as Card);
     }
@@ -365,7 +409,11 @@ function doSwap(s: GameState, a: SlotRef, b: SlotRef): void {
  * reducer
  * ------------------------------------------------------------------ */
 
-export function applyAction(state: GameState, action: Action): ApplyResult {
+export function applyAction(
+  state: GameState,
+  action: Action,
+  now: number = Date.now(),
+): ApplyResult {
   const s = clone(state);
 
   switch (action.type) {
@@ -373,6 +421,20 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
 
     case "startRound":
       return startRound(state);
+
+    case "setMemoryMode": {
+      if (s.phase === "playing" || s.phase === "peek") {
+        return fail("Finish the round before changing the mode.");
+      }
+      s.memoryMode = action.on;
+      log(
+        s,
+        action.on
+          ? "Memory mode ON - cards flip back after 3 seconds. Remember them."
+          : "Memory mode OFF - assist mode. Everything you have seen stays face up.",
+      );
+      return { ok: true, state: s };
+    }
 
     case "newGame": {
       if (s.phase === "playing" || s.phase === "peek") return fail("A round is in progress.");
@@ -402,8 +464,8 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       if (used >= INITIAL_PEEKS) return fail(`You have already peeked at ${INITIAL_PEEKS} cards.`);
       const card = p.slots[action.slot];
       if (!card) return fail("No card in that slot.");
-      if (knows(s, action.playerId, card.id)) return fail("You already peeked at that card.");
-      learn(s, action.playerId, card.id);
+      if (hasEverSeen(s, action.playerId, card.id)) return fail("You already peeked at that card.");
+      learn(s, action.playerId, card.id, now);
       s.initialPeeks[action.playerId] = used + 1;
       log(s, `You peeked at slot ${action.slot + 1}: ${cardName(card)}.`, [action.playerId]);
 
@@ -411,6 +473,10 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       if (allDone) {
         s.phase = "playing";
         s.snapOpen = true;
+        // Everyone looked together, so everyone's clock starts together.
+        for (const seen of Object.values(s.knowledge)) {
+          for (const cardId of Object.keys(seen)) seen[cardId] = now;
+        }
         const first = currentPlayerId(s);
         log(s, "Everyone has peeked. Play begins - snapping is live.");
         if (first) log(s, `${mustPlayer(s, first).name} goes first.`);
@@ -430,7 +496,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       // Beginning a turn shuts the snap window on the previous discard.
       s.snapOpen = false;
       s.pending = { kind: "drawn", card, from: "deck" };
-      learn(s, action.playerId, card.id);
+      learn(s, action.playerId, card.id, now);
       log(s, `${mustPlayer(s, action.playerId).name} draws from the deck.`);
       return { ok: true, state: s };
     }
@@ -445,7 +511,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       s.snapOpen = false;
       // A taken discard must be swapped in, and grants no power.
       s.pending = { kind: "drawn", card: top, from: "discard" };
-      learn(s, action.playerId, top.id);
+      learn(s, action.playerId, top.id, now);
       log(s, `${mustPlayer(s, action.playerId).name} takes ${cardLabel(top)} from the discard.`);
       return { ok: true, state: s };
     }
@@ -461,8 +527,8 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       const incoming = s.pending.card;
       p.slots[action.slot] = incoming;
       s.discard.push(outgoing);
-      learn(s, action.playerId, incoming.id);
-      learnAll(s, outgoing.id);
+      learn(s, action.playerId, incoming.id, now);
+      learnAll(s, outgoing.id, now);
       s.pending = { kind: "none" };
       s.snapOpen = true;
       log(s, `${p.name} swaps into slot ${action.slot + 1}, discarding ${cardLabel(outgoing)}.`);
@@ -479,7 +545,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       }
       const card = s.pending.card;
       s.discard.push(card);
-      learnAll(s, card.id);
+      learnAll(s, card.id, now);
       s.snapOpen = true;
       const power = powerOf(card);
       const p = mustPlayer(s, action.playerId);
@@ -515,7 +581,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       );
       if (already) return fail("You already looked at that card - pick another.");
 
-      learn(s, action.playerId, target.id);
+      learn(s, action.playerId, target.id, now);
       pending.looked.push({ ...action.target });
 
       const actor = mustPlayer(s, action.playerId);
@@ -610,7 +676,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       const top = topDiscard(s);
       if (!top) return fail("Nothing to snap onto.");
 
-      learnAll(s, card.id);
+      learnAll(s, card.id, now);
       if (card.rank === top.rank) {
         p.slots[action.slot] = null;
         s.discard.push(card);
@@ -646,7 +712,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       const top = topDiscard(s);
       if (!top) return fail("Nothing to snap onto.");
 
-      learnAll(s, card.id);
+      learnAll(s, card.id, now);
       if (card.rank === top.rank) {
         victim.slots[action.target.slot] = null;
         s.discard.push(card);
@@ -700,7 +766,7 @@ export function applyAction(state: GameState, action: Action): ApplyResult {
       if (s.pending.kind === "drawn") {
         const card = s.pending.card;
         s.discard.push(card);
-        learnAll(s, card.id);
+        learnAll(s, card.id, now);
         s.snapOpen = true;
         log(s, `Turn auto-played: ${cardLabel(card)} discarded.`);
       }
@@ -738,7 +804,7 @@ export function addPlayer(state: GameState, id: string, name: string): ApplyResu
     lastRoundScore: null,
     isHost,
   });
-  s.knowledge[id] = [];
+  s.knowledge[id] = {};
   s.initialPeeks[id] = 0;
   if (!s.turnOrder.includes(id)) s.turnOrder.push(id);
   log(s, `${name} joined.`);

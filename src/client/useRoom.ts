@@ -29,6 +29,8 @@ export function saveName(name: string): void {
 
 export interface Room {
   view: GameView | null;
+  /** When the current view arrived, for running reveal countdowns locally. */
+  receivedAt: number;
   conn: ConnState;
   error: string | null;
   clearError: () => void;
@@ -38,6 +40,7 @@ export interface Room {
 
 export function useRoom(roomKey: string | null, name: string): Room {
   const [view, setView] = useState<GameView | null>(null);
+  const [receivedAt, setReceivedAt] = useState(() => Date.now());
   const [conn, setConn] = useState<ConnState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [playerId, setPlayerId] = useState<string | null>(null);
@@ -81,7 +84,10 @@ export function useRoom(roomKey: string | null, name: string): Room {
         } catch {
           return;
         }
-        if (msg.t === "state") setView(msg.view);
+        if (msg.t === "state") {
+          setReceivedAt(Date.now());
+          setView(msg.view);
+        }
         else if (msg.t === "joined") setPlayerId(msg.playerId);
         else if (msg.t === "error") setError(msg.message);
       };
@@ -120,5 +126,5 @@ export function useRoom(roomKey: string | null, name: string): Room {
 
   const clearError = useCallback(() => setError(null), []);
 
-  return { view, conn, error, clearError, send, playerId };
+  return { view, receivedAt, conn, error, clearError, send, playerId };
 }

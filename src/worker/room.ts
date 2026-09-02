@@ -4,6 +4,7 @@ import {
   applyAction,
   createGame,
   getPlayer,
+  nextRevealExpiry,
   removePlayer,
   setConnected,
   turnIsStalled,
@@ -50,6 +51,16 @@ export class GameRoom extends DurableObject<Env> {
       this.roomKey = (await ctx.storage.get<string>("roomKey")) ?? "";
       if (saved) {
         this.game = saved;
+        // Rooms stored before memory mode existed have no flag; default it on
+        // rather than letting `undefined` read as assist mode.
+        if (this.game.memoryMode === undefined) this.game.memoryMode = true;
+        for (const id of Object.keys(this.game.knowledge)) {
+          // Knowledge used to be a plain id array; migrate to a sighting map.
+          const entry = this.game.knowledge[id] as unknown;
+          if (Array.isArray(entry)) {
+            this.game.knowledge[id] = Object.fromEntries(entry.map((cid) => [cid, 0]));
+          }
+        }
       } else {
         const seed = new Uint32Array(1);
         crypto.getRandomValues(seed);
@@ -146,10 +157,10 @@ export class GameRoom extends DurableObject<Env> {
           return;
         }
         // Only the host may deal a new round.
-        if (ca.type === "startRound" || ca.type === "newGame") {
+        if (ca.type === "startRound" || ca.type === "newGame" || ca.type === "setMemoryMode") {
           const me = getPlayer(this.game, meta.playerId);
           if (!me?.isHost) {
-            this.sendTo(ws, { t: "error", message: "Only the host can start a round." });
+            this.sendTo(ws, { t: "error", message: "Only the host can change the game setup." });
             return;
           }
         }
@@ -187,10 +198,19 @@ export class GameRoom extends DurableObject<Env> {
     await this.webSocketClose(ws);
   }
 
+  /**
+   * Fires for two reasons: a memory-mode sighting has lapsed (so views must be
+   * re-pushed with that card removed), or the active player has been gone long
+   * enough that their turn should be auto-played.
+   */
   override async alarm(): Promise<void> {
+    const now = Date.now();
     if (turnIsStalled(this.game)) {
-      const result = applyAction(this.game, { type: "forceAdvance" });
-      if (result.ok) this.game = result.state;
+      const stallSince = (await this.ctx.storage.get<number>("stallSince")) ?? now;
+      if (now - stallSince >= STALL_TIMEOUT_MS) {
+        const result = applyAction(this.game, { type: "forceAdvance" }, now);
+        if (result.ok) this.game = result.state;
+      }
     }
     await this.commit();
   }
@@ -213,25 +233,49 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  /** Persist, push a fresh per-player view to everyone, and watch for stalls. */
+  /** Persist, push a fresh per-player view to everyone, and set the next wake. */
   private async commit(): Promise<void> {
+    const now = Date.now();
     await this.ctx.storage.put("game", this.game);
     for (const ws of this.ctx.getWebSockets()) {
       const meta = this.metaOf(ws);
       if (!meta) continue;
       this.sendTo(ws, {
         t: "state",
-        view: buildView(this.game, meta.playerId),
+        view: buildView(this.game, meta.playerId, now),
         roomKey: this.roomKey,
       });
     }
+    await this.scheduleWake(now);
+  }
+
+  /**
+   * A Durable Object has a single alarm slot, so both deadlines share it and
+   * the nearer one wins. `stallSince` is persisted rather than recomputed so a
+   * dropped player's grace period is not pushed forward by every commit.
+   */
+  private async scheduleWake(now: number): Promise<void> {
+    const deadlines: number[] = [];
+
     if (turnIsStalled(this.game)) {
-      const existing = await this.ctx.storage.getAlarm();
-      if (existing === null) {
-        await this.ctx.storage.setAlarm(Date.now() + STALL_TIMEOUT_MS);
+      let stallSince = await this.ctx.storage.get<number>("stallSince");
+      if (stallSince === undefined) {
+        stallSince = now;
+        await this.ctx.storage.put("stallSince", now);
       }
+      deadlines.push(stallSince + STALL_TIMEOUT_MS);
     } else {
-      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.delete("stallSince");
     }
+
+    const expiry = nextRevealExpiry(this.game, now);
+    if (expiry !== null) deadlines.push(expiry);
+
+    if (deadlines.length === 0) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    // Never schedule in the past, or the alarm re-fires in a tight loop.
+    await this.ctx.storage.setAlarm(Math.max(now + 50, Math.min(...deadlines)));
   }
 }

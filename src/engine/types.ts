@@ -71,8 +71,17 @@ export interface GameState {
   snapOpen: boolean;
   /** Initial 2-card peeks used, per player. */
   initialPeeks: Record<string, number>;
-  /** Card ids each player has legitimately seen. Drives per-player redaction. */
-  knowledge: Record<string, string[]>;
+  /**
+   * Card ids each player has legitimately seen, mapped to WHEN they saw it.
+   * In memory mode the entry expires, so the server stops sending that card -
+   * a forgotten card is genuinely gone, not merely hidden in the DOM.
+   */
+  knowledge: Record<string, Record<string, number>>;
+  /**
+   * true  = real Cabo. You get REVEAL_MS to look, then you must remember.
+   * false = assist mode. Everything you have seen stays face up.
+   */
+  memoryMode: boolean;
   log: LogEntry[];
   nextLogId: number;
   roundNumber: number;
@@ -97,6 +106,7 @@ export type Action =
   | { type: "snapOther"; playerId: string; target: SlotRef }
   | { type: "giveCard"; playerId: string; slot: number }
   | { type: "newGame" }
+  | { type: "setMemoryMode"; on: boolean }
   /** Server-only: auto-play a stalled turn (e.g. the active player dropped). */
   | { type: "forceAdvance" };
 
@@ -110,5 +120,7 @@ export const CABO_PENALTY = 5;
 export const SNAP_PENALTY_CARDS = 1;
 export const TARGET_SCORE = 100;
 export const EXACT_TARGET_RESET = 50;
+/** How long a card stays visible in memory mode. */
+export const REVEAL_MS = 3000;
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 8;

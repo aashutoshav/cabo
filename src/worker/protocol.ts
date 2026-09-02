@@ -19,7 +19,8 @@ export type ClientAction =
   | { type: "snapOwn"; slot: number }
   | { type: "snapOther"; target: SlotRef }
   | { type: "giveCard"; slot: number }
-  | { type: "newGame" };
+  | { type: "newGame" }
+  | { type: "setMemoryMode"; on: boolean };
 
 export type ClientMsg =
   | { t: "join"; playerId: string; name: string }

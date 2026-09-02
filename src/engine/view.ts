@@ -7,6 +7,7 @@ import {
   handTotal,
   isSnapSuspended,
   knows,
+  revealRemaining,
   topDiscard,
 } from "./engine";
 import { type GameState, type LogEntry, type Phase, INITIAL_PEEKS } from "./types";
@@ -19,7 +20,13 @@ import { type GameState, type LogEntry, type Phase, INITIAL_PEEKS } from "./type
 export type SlotView =
   | { state: "empty" }
   | { state: "hidden" }
-  | { state: "known"; card: Card };
+  /**
+   * `hidesInMs` is how much longer this card stays visible in memory mode
+   * (null in assist mode, or at the end-of-round reveal). The client runs the
+   * countdown locally so the flip-back is crisp, but the server independently
+   * stops sending the card once it lapses.
+   */
+  | { state: "known"; card: Card; hidesInMs: number | null };
 
 export interface PlayerView {
   id: string;
@@ -69,15 +76,25 @@ export interface GameView {
   log: LogEntry[];
   revealAll: boolean;
   yourTurn: boolean;
+  memoryMode: boolean;
 }
 
-function slotView(s: GameState, viewerId: string, card: Card | null, reveal: boolean): SlotView {
+function slotView(
+  s: GameState,
+  viewerId: string,
+  card: Card | null,
+  reveal: boolean,
+  now: number,
+): SlotView {
   if (card === null) return { state: "empty" };
-  if (reveal || knows(s, viewerId, card.id)) return { state: "known", card };
+  if (reveal) return { state: "known", card, hidesInMs: null };
+  if (knows(s, viewerId, card.id, now)) {
+    return { state: "known", card, hidesInMs: revealRemaining(s, viewerId, card.id, now) };
+  }
   return { state: "hidden" };
 }
 
-export function buildView(s: GameState, viewerId: string): GameView {
+export function buildView(s: GameState, viewerId: string, now: number = Date.now()): GameView {
   const reveal = s.revealAll;
   const current = currentPlayerId(s);
 
@@ -88,7 +105,7 @@ export function buildView(s: GameState, viewerId: string): GameView {
     isHost: p.isHost,
     score: p.score,
     lastRoundScore: p.lastRoundScore,
-    slots: p.slots.map((c) => slotView(s, viewerId, c, reveal)),
+    slots: p.slots.map((c) => slotView(s, viewerId, c, reveal, now)),
     cardCount: cardsInHand(p),
     total: reveal ? handTotal(p) : null,
     isYou: p.id === viewerId,
@@ -135,17 +152,18 @@ export function buildView(s: GameState, viewerId: string): GameView {
     log: s.log.filter((l) => !l.private || l.private.includes(viewerId)),
     revealAll: reveal,
     yourTurn: current === viewerId && s.caboCallerId !== viewerId,
+    memoryMode: s.memoryMode,
   };
 }
 
 /** Sanity guard used in tests: no view may leak an unseen card. */
-export function viewLeaks(s: GameState, viewerId: string): string[] {
+export function viewLeaks(s: GameState, viewerId: string, now: number = Date.now()): string[] {
   const leaks: string[] = [];
   if (s.revealAll) return leaks;
-  const view = buildView(s, viewerId);
+  const view = buildView(s, viewerId, now);
   for (const p of view.players) {
     for (const [i, slot] of p.slots.entries()) {
-      if (slot.state === "known" && !knows(s, viewerId, slot.card.id)) {
+      if (slot.state === "known" && !knows(s, viewerId, slot.card.id, now)) {
         leaks.push(`${p.name} slot ${i} leaked ${slot.card.id}`);
       }
     }

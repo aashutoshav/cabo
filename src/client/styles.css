@@ -635,3 +635,41 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   .card-sm .card-corner { font-size: 0.6rem; }
   .card-sm .card-value { display: none; }
 }
+
+/* ---------------- memory mode ---------------- */
+
+.slot-timer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: var(--gold);
+  border-radius: 0 2px 2px 0;
+  transition: width 0.1s linear;
+  pointer-events: none;
+}
+
+.assist-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ink-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--ink-faint);
+  padding: 0.45rem 0.6rem;
+  border-radius: 0 6px 6px 0;
+}
+.assist-note strong { color: var(--ink); }
+
+.mode-toggle {
+  font-size: 0.78rem;
+  padding: 0.5rem 0.7rem;
+}
+.mode-toggle.is-on {
+  border-color: rgba(232, 196, 106, 0.5);
+  color: var(--gold);
+  background: rgba(232, 196, 106, 0.1);
+}
+.mode-toggle.is-off {
+  border-color: var(--line);
+  color: var(--ink-faint);
+}

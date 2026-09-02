@@ -33,6 +33,20 @@ export function Rules({ onClose }: { onClose: () => void }) {
           when you draw from the deck and discard without keeping - never off a taken discard.
         </p>
 
+        <h3>Memory mode</h3>
+        <p>
+          <strong>On by default, and this is real Cabo.</strong> Any card you see - the two you peek
+          at the start, a spy, a queen&apos;s look, a snap flip - stays visible for 3 seconds and
+          then turns back over. After that it is on you to remember it. The two cards you peek at
+          the start stay up until the whole table is ready, so everyone&apos;s 3 seconds begin
+          together.
+        </p>
+        <p>
+          Turn it off and you get <strong>assist mode - the dumb version, where you don&apos;t have
+          to remember your cards.</strong> Everything you have ever seen stays face up for the rest
+          of the round. Only the host can switch, and only between rounds.
+        </p>
+
         <h3>Your turn</h3>
         <ol>
           <li>Draw from the deck, then either swap it into a slot or discard it and optionally use its power.</li>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { POWER_LABEL, cardValue, powerOf } from "../engine/cards";
-import type { SlotRef } from "../engine/types";
-import type { GameView, PlayerView } from "../engine/view";
+import { REVEAL_MS, type SlotRef } from "../engine/types";
+import type { GameView, PlayerView, SlotView } from "../engine/view";
 import { prettyKey } from "./App";
 import { CardFace, PowerBadge, Slot } from "./CardFace";
 import type { Room } from "./useRoom";
@@ -27,7 +27,7 @@ const sameRef = (a: SlotRef | null, b: SlotRef) =>
   !!a && a.playerId === b.playerId && a.slot === b.slot;
 
 export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
-  const { view, conn, error, clearError, send } = room;
+  const { view, receivedAt, conn, error, clearError, send } = room;
   const [snapArmed, setSnapArmed] = useState(false);
   const [swapFirst, setSwapFirst] = useState<SlotRef | null>(null);
   const [copied, setCopied] = useState(false);
@@ -48,6 +48,20 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
     const t = setTimeout(clearError, 3200);
     return () => clearTimeout(t);
   }, [error, clearError]);
+
+  // Memory mode: run the flip-back countdown locally so it is crisp, while the
+  // server independently stops sending the card once the window closes.
+  const counting =
+    view?.players.some((p) =>
+      p.slots.some((sl) => sl.state === "known" && sl.hidesInMs !== null),
+    ) ?? false;
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!counting) return;
+    setClock(Date.now());
+    const id = window.setInterval(() => setClock(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [counting, receivedAt]);
 
   const mode: Mode = useMemo(() => {
     if (!view) return { m: "none" };
@@ -71,8 +85,15 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
     );
   }
 
-  const you = view.players.find((p) => p.isYou) ?? null;
-  const others = view.players.filter((p) => !p.isYou);
+  const elapsed = Math.max(0, clock - receivedAt);
+  const liveSlot = (sl: SlotView): SlotView =>
+    sl.state === "known" && sl.hidesInMs !== null && elapsed >= sl.hidesInMs
+      ? { state: "hidden" }
+      : sl;
+  const livePlayers = view.players.map((p) => ({ ...p, slots: p.slots.map(liveSlot) }));
+
+  const you = livePlayers.find((p) => p.isYou) ?? null;
+  const others = livePlayers.filter((p) => !p.isYou);
   const shareUrl = `${location.origin}${location.pathname}?room=${prettyKey(roomKey)}`;
 
   const copyLink = async () => {
@@ -164,7 +185,9 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
     if (view.phase === "peek") {
       return view.initialPeeksLeft > 0
         ? `Peek at ${view.initialPeeksLeft} more of your own cards.`
-        : "Waiting for everyone else to finish peeking.";
+        : view.memoryMode
+          ? "Waiting for everyone else. Your cards flip back 3 seconds after play begins."
+          : "Waiting for everyone else to finish peeking.";
     }
     if (view.phase === "roundEnd") return "Round over.";
     if (view.phase === "gameEnd") return "Game over.";
@@ -235,6 +258,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
             player={p}
             view={view}
             small
+            elapsed={elapsed}
             isSelectable={isSelectable}
             onSlotClick={onSlotClick}
             swapFirst={swapFirst}
@@ -267,6 +291,12 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
 
         <div className="status-block">
           <p className="status">{status}</p>
+          {!view.memoryMode && (
+            <p className="assist-note">
+              <strong>Assist mode</strong> - this is the dumb version, where you don&apos;t have to
+              remember your cards. Everything you have seen stays face up.
+            </p>
+          )}
           {view.caboCallerId && view.phase === "playing" && (
             <p className="cabo-note">
               {view.players.find((p) => p.id === view.caboCallerId)?.name} called CABO - their hand is
@@ -291,6 +321,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
           <HandPanel
             player={you}
             view={view}
+            elapsed={elapsed}
             isSelectable={isSelectable}
             onSlotClick={onSlotClick}
             swapFirst={swapFirst}
@@ -343,12 +374,13 @@ interface HandPanelProps {
   player: PlayerView;
   view: GameView;
   small?: boolean;
+  elapsed: number;
   isSelectable: (p: PlayerView, i: number) => boolean;
   onSlotClick: (p: PlayerView, i: number) => void;
   swapFirst: SlotRef | null;
 }
 
-function HandPanel({ player, view, small, isSelectable, onSlotClick, swapFirst }: HandPanelProps) {
+function HandPanel({ player, view, small, elapsed, isSelectable, onSlotClick, swapFirst }: HandPanelProps) {
   const locked = player.calledCabo;
   return (
     <div
@@ -383,6 +415,11 @@ function HandPanel({ player, view, small, isSelectable, onSlotClick, swapFirst }
             locked={locked && view.phase === "playing"}
             selectable={isSelectable(player, i)}
             selected={sameRef(swapFirst, { playerId: player.id, slot: i })}
+            countdown={
+              slot.state === "known" && slot.hidesInMs !== null
+                ? Math.min(1, Math.max(0, slot.hidesInMs - elapsed) / REVEAL_MS)
+                : null
+            }
             onClick={() => onSlotClick(player, i)}
           />
         ))}
@@ -415,6 +452,9 @@ function ActionBar({ view, you, mode, snapArmed, setSnapArmed, send, swapFirst, 
     you?.isHost &&
     (view.phase === "lobby" || view.phase === "roundEnd") &&
     view.players.length >= 2;
+  // The mode is a table-wide setting, so only between rounds and host only.
+  const canSetMode =
+    you?.isHost && (view.phase === "lobby" || view.phase === "roundEnd" || view.phase === "gameEnd");
 
   const pending = view.pending;
   const yourTurn = view.yourTurn && !view.pendingGive;
@@ -425,6 +465,19 @@ function ActionBar({ view, you, mode, snapArmed, setSnapArmed, send, swapFirst, 
         {canStart && (
           <button className="btn btn-primary" onClick={() => send({ type: "startRound" })}>
             {view.phase === "lobby" ? "Deal the round" : "Next round"}
+          </button>
+        )}
+        {canSetMode && (
+          <button
+            className={`btn mode-toggle ${view.memoryMode ? "is-on" : "is-off"}`}
+            onClick={() => send({ type: "setMemoryMode", on: !view.memoryMode })}
+            title={
+              view.memoryMode
+                ? "Real Cabo: you get 3 seconds to look, then you must remember"
+                : "Assist mode: everything you have seen stays face up"
+            }
+          >
+            {view.memoryMode ? "Memory mode: ON" : "Memory mode: OFF"}
           </button>
         )}
         {you?.isHost === false && view.phase === "lobby" && (

@@ -40,9 +40,11 @@ export interface SlotProps {
   locked?: boolean;
   onClick?: () => void;
   small?: boolean;
+  /** Fraction of the reveal window left (1 -> 0), or null if it never hides. */
+  countdown?: number | null;
 }
 
-export function Slot({ slot, index, selectable, selected, locked, onClick, small }: SlotProps) {
+export function Slot({ slot, index, selectable, selected, locked, onClick, small, countdown }: SlotProps) {
   if (slot.state === "empty") {
     return (
       <div className={`slot slot-empty ${small ? "slot-sm" : ""}`} title="Shed - gone for good">
@@ -72,7 +74,12 @@ export function Slot({ slot, index, selectable, selected, locked, onClick, small
       }
     >
       {slot.state === "known" ? (
-        <CardFace card={slot.card} small={small} />
+        <>
+          <CardFace card={slot.card} small={small} />
+          {countdown !== null && countdown !== undefined && (
+            <span className="slot-timer" style={{ width: `${Math.max(0, countdown) * 100}%` }} />
+          )}
+        </>
       ) : (
         <div className={`card card-back ${small ? "card-sm" : ""}`}>
           <span className="card-back-mark">?</span>

@@ -7,6 +7,8 @@ import {
   createGame,
   currentPlayerId,
   handTotal,
+  knows,
+  nextRevealExpiry,
   startRound,
 } from "./engine";
 import type { Action, ApplyResult, GameState } from "./types";
@@ -28,8 +30,12 @@ function err(r: ApplyResult): string {
   if (r.ok) throw new Error("expected failure, but action succeeded");
   return r.error;
 }
-function act(s: GameState, a: Action): GameState {
-  return ok(applyAction(s, a));
+function act(s: GameState, a: Action, now?: number): GameState {
+  return ok(applyAction(s, a, now));
+}
+/** Card ids a player has on record as having seen. */
+function known(s: GameState, id: string): string[] {
+  return Object.keys(s.knowledge[id] ?? {});
 }
 
 /** Build a mid-round state with exact hands, for precise rule tests. */
@@ -52,7 +58,11 @@ function table(
   s.caboCallerId = opts.caboCaller ?? null;
   if (opts.knowAll) {
     for (const p of s.players) {
-      s.knowledge[p.id] = s.players.flatMap((q) => q.slots.filter((c): c is Card => !!c).map((c) => c.id));
+      s.knowledge[p.id] = Object.fromEntries(
+        s.players.flatMap((q) =>
+          q.slots.filter((c): c is Card => !!c).map((c) => [c.id, 0] as const),
+        ),
+      );
     }
   }
   return s;
@@ -132,7 +142,7 @@ describe("setup", () => {
     s = act(s, { type: "initialPeek", playerId: "b", slot: 3 });
     expect(s.phase).toBe("playing");
     expect(s.snapOpen).toBe(true);
-    expect(s.knowledge["a"]).toHaveLength(2);
+    expect(known(s, "a")).toHaveLength(2);
   });
 });
 
@@ -187,7 +197,7 @@ describe("power resolution", () => {
       /your own/i,
     );
     s = act(s, { type: "powerLook", playerId: "a", target: { playerId: "a", slot: 2 } });
-    expect(s.knowledge["a"]).toContain("4S");
+    expect(known(s, "a")).toContain("4S");
     expect(currentPlayerId(s)).toBe("b"); // no swap step, turn ends
   });
 
@@ -201,7 +211,7 @@ describe("power resolution", () => {
       /opponent/i,
     );
     s = act(s, { type: "powerLook", playerId: "a", target: { playerId: "b", slot: 1 } });
-    expect(s.knowledge["a"]).toContain("3H");
+    expect(known(s, "a")).toContain("3H");
   });
 
   it("J blind-swaps exactly one of yours for one of theirs", () => {
@@ -225,7 +235,7 @@ describe("power resolution", () => {
     expect(s.players[0]!.slots[0]!.id).toBe("2H");
     expect(s.players[1]!.slots[0]!.id).toBe("9C");
     // neither side learns the card they received
-    expect(s.knowledge["a"]).not.toContain("2H");
+    expect(known(s, "a")).not.toContain("2H");
   });
 
   it("Q looks at any one card then swaps any two on the board", () => {
@@ -244,7 +254,7 @@ describe("power resolution", () => {
     ).toMatch(/still have cards to look at/i);
 
     s = act(s, { type: "powerLook", playerId: "a", target: { playerId: "b", slot: 2 } });
-    expect(s.knowledge["a"]).toContain("4H");
+    expect(known(s, "a")).toContain("4H");
     // the swap need not involve the card looked at, or the actor
     s = act(s, {
       type: "powerSwap", playerId: "a",
@@ -266,8 +276,8 @@ describe("power resolution", () => {
       /already looked/i,
     );
     s = act(s, { type: "powerLook", playerId: "a", target: { playerId: "a", slot: 3 } });
-    expect(s.knowledge["a"]).toContain("2H");
-    expect(s.knowledge["a"]).toContain("5S");
+    expect(known(s, "a")).toContain("2H");
+    expect(known(s, "a")).toContain("5S");
     s = act(s, { type: "powerSkip", playerId: "a" });
     expect(currentPlayerId(s)).toBe("b");
   });
@@ -311,7 +321,7 @@ describe("snapping", () => {
     expect(s.players[1]!.slots[0]!.id).toBe("9H");
     expect(cardsInHand(s.players[1]!)).toBe(5);
     // everyone saw the flipped card
-    expect(s.knowledge["a"]).toContain("9H");
+    expect(known(s, "a")).toContain("9H");
   });
 
   it("treats kings as matching by rank regardless of colour", () => {
@@ -611,5 +621,146 @@ describe("deck exhaustion", () => {
     expect(s.discard).toHaveLength(1);
     expect(s.discard[0]!.id).toBe("7D");
     expect(s.deck.length).toBe(2); // 3 reshuffled, 1 drawn
+  });
+});
+
+describe("memory mode", () => {
+  const T0 = 1_000_000;
+
+  /** A round in progress, where everyone peeked simultaneously at T0. */
+  function peeked(memoryMode: boolean) {
+    let s = createGame(7);
+    s = ok(addPlayer(s, "a", "Ana"));
+    s = ok(addPlayer(s, "b", "Ben"));
+    s.memoryMode = memoryMode;
+    s = ok(startRound(s));
+    for (const id of ["a", "b"]) {
+      s = act(s, { type: "initialPeek", playerId: id, slot: 0 }, T0);
+      s = act(s, { type: "initialPeek", playerId: id, slot: 1 }, T0);
+    }
+    if (s.phase !== "playing") throw new Error("expected play to have begun");
+    return s;
+  }
+
+  it("is on by default - real Cabo, not the assisted version", () => {
+    expect(createGame(1).memoryMode).toBe(true);
+  });
+
+  it("stops sending a peeked card once the 3 seconds lapse", () => {
+    const s = peeked(true);
+    const cardId = (s.players[0]!.slots[0] as Card).id;
+
+    // Visible immediately...
+    expect(knows(s, "a", cardId, T0)).toBe(true);
+    expect(buildView(s, "a", T0).players[0]!.slots[0]!.state).toBe("known");
+
+    // ...still visible just before the deadline...
+    expect(knows(s, "a", cardId, T0 + 2999)).toBe(true);
+
+    // ...and genuinely gone from the payload afterwards.
+    expect(knows(s, "a", cardId, T0 + 3000)).toBe(false);
+    const late = buildView(s, "a", T0 + 3001).players[0]!.slots[0]!;
+    expect(late.state).toBe("hidden");
+    expect(JSON.stringify(late)).not.toContain(cardId);
+  });
+
+  it("counts down the remaining reveal time for the client", () => {
+    const s = peeked(true);
+    const at1s = buildView(s, "a", T0 + 1000).players[0]!.slots[0]!;
+    expect(at1s.state === "known" && at1s.hidesInMs).toBe(2000);
+  });
+
+  it("keeps sightings forever in assist mode", () => {
+    const s = peeked(false);
+    const cardId = (s.players[0]!.slots[0] as Card).id;
+    expect(knows(s, "a", cardId, T0 + 10 * 60 * 1000)).toBe(true);
+    const later = buildView(s, "a", T0 + 10 * 60 * 1000).players[0]!.slots[0]!;
+    expect(later.state === "known" && later.hidesInMs).toBeNull();
+  });
+
+  it("leaks nothing after a sighting lapses", () => {
+    const s = peeked(true);
+    expect(viewLeaks(s, "a", T0 + 5000)).toEqual([]);
+    expect(viewLeaks(s, "b", T0 + 5000)).toEqual([]);
+  });
+
+  it("expires a snap flip for the whole table", () => {
+    let s = table({ a: [C("7C"), C("3S"), C("4S"), C("5S")], b: [C("9H"), C("3H"), C("4H"), C("5H")] }, {
+      top: C("7D"), deck: [C("AS")],
+    });
+    s = act(s, { type: "snapOwn", playerId: "b", slot: 0 }, T0); // a miss - everyone sees 9H
+    expect(knows(s, "a", "9H", T0)).toBe(true);
+    expect(knows(s, "a", "9H", T0 + 3001)).toBe(false);
+  });
+
+  it("reports when the next sighting lapses so the room can re-push", () => {
+    const s = peeked(true);
+    expect(nextRevealExpiry(s, T0)).toBe(T0 + 3000);
+    expect(nextRevealExpiry(s, T0 + 5000)).toBeNull();
+  });
+
+  it("ignores expiry at the end-of-round reveal", () => {
+    let s = table({ a: [C("AS"), null, null, null], b: [C("9H"), C("9D"), C("9C"), C("9S")] }, {
+      deck: [C("3D"), C("4D")],
+    });
+    s = act(s, { type: "callCabo", playerId: "a" }, T0);
+    while (s.phase === "playing") {
+      const cur = currentPlayerId(s)!;
+      s = act(s, { type: "drawFromDeck", playerId: cur }, T0);
+      s = act(s, { type: "discardDrawn", playerId: cur, usePower: false }, T0);
+    }
+    const view = buildView(s, "a", T0 + 60_000);
+    expect(view.players.every((p) => p.slots.every((sl) => sl.state !== "hidden"))).toBe(true);
+  });
+
+  it("refuses a mode change mid-round", () => {
+    const s = peeked(true);
+    expect(err(applyAction(s, { type: "setMemoryMode", on: false }))).toMatch(/finish the round/i);
+  });
+
+  it("allows a mode change between rounds", () => {
+    let s = createGame(3);
+    s = ok(addPlayer(s, "a", "Ana"));
+    s = ok(addPlayer(s, "b", "Ben"));
+    s = act(s, { type: "setMemoryMode", on: false });
+    expect(s.memoryMode).toBe(false);
+    s = ok(startRound(s));
+    expect(s.memoryMode).toBe(false);
+  });
+});
+
+describe("peek phase timing", () => {
+  const T0 = 2_000_000;
+
+  it("holds both peeked cards up until the whole table is ready", () => {
+    let s = createGame(11);
+    s = ok(addPlayer(s, "a", "Ana"));
+    s = ok(addPlayer(s, "b", "Ben"));
+    s = ok(startRound(s));
+    s = act(s, { type: "initialPeek", playerId: "a", slot: 0 }, T0);
+    s = act(s, { type: "initialPeek", playerId: "a", slot: 1 }, T0);
+    const cardId = (s.players[0]!.slots[0] as Card).id;
+
+    // Ben is slow; Ana's cards must not lapse while the round has not begun.
+    expect(s.phase).toBe("peek");
+    expect(knows(s, "a", cardId, T0 + 60_000)).toBe(true);
+
+    // Ben finishes much later - the clock starts for everyone at that moment.
+    const START = T0 + 60_000;
+    s = act(s, { type: "initialPeek", playerId: "b", slot: 0 }, START);
+    s = act(s, { type: "initialPeek", playerId: "b", slot: 1 }, START);
+    expect(s.phase).toBe("playing");
+    expect(knows(s, "a", cardId, START + 2999)).toBe(true);
+    expect(knows(s, "a", cardId, START + 3001)).toBe(false);
+  });
+
+  it("does not let an expired sighting unlock a third peek", () => {
+    let s = createGame(11);
+    s = ok(addPlayer(s, "a", "Ana"));
+    s = ok(addPlayer(s, "b", "Ben"));
+    s = ok(startRound(s));
+    s = act(s, { type: "initialPeek", playerId: "a", slot: 0 }, T0);
+    expect(err(applyAction(s, { type: "initialPeek", playerId: "a", slot: 0 }, T0 + 9999)))
+      .toMatch(/already peeked/i);
   });
 });
