@@ -62,7 +62,7 @@ Open <http://localhost:5173>. To play several players locally, add `?seat=2`,
 browser.
 
 ```bash
-npm test          # 45 rule tests
+npm test          # 57 rule tests
 npm run typecheck # client and worker are typechecked separately
 ```
 
