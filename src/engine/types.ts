@@ -53,6 +53,13 @@ export interface LogEntry {
   private?: string[];
 }
 
+/** The most recent power-swap, kept only so clients can animate it once. */
+export interface SwapEvent {
+  id: number;
+  a: SlotRef;
+  b: SlotRef;
+}
+
 export interface GameState {
   phase: Phase;
   players: Player[];
@@ -84,6 +91,9 @@ export interface GameState {
   memoryMode: boolean;
   log: LogEntry[];
   nextLogId: number;
+  /** Last power-swap, for one-shot client animation; cleared at the start of each round. */
+  lastSwap: SwapEvent | null;
+  nextSwapId: number;
   roundNumber: number;
   targetScore: number;
   /** Set at round end so clients can reveal every hand. */

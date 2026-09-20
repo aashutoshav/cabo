@@ -194,6 +194,8 @@ export function createGame(seed: number): GameState {
     memoryMode: true,
     log: [],
     nextLogId: 1,
+    lastSwap: null,
+    nextSwapId: 1,
     roundNumber: 0,
     targetScore: TARGET_SCORE,
     revealAll: false,
@@ -218,6 +220,7 @@ export function startRound(state: GameState): ApplyResult {
   s.revealAll = false;
   s.initialPeeks = {};
   s.knowledge = {};
+  s.lastSwap = null;
 
   s.turnOrder = s.players.map((p) => p.id);
   // Rotate the starting player each round so the same person doesn't always lead.
@@ -451,6 +454,7 @@ export function applyAction(
       s.revealAll = false;
       s.pending = { kind: "none" };
       s.pendingGive = null;
+      s.lastSwap = null;
       s.log = [];
       log(s, "Scores reset - new game.");
       return startRound(s);
@@ -613,7 +617,6 @@ export function applyAction(
       if (err) return fail(err);
       if (s.pending.kind !== "power") return fail("No power to resolve.");
       if (s.pending.stage !== "swap") return fail("You still have cards to look at.");
-      const { power } = s.pending;
       const { a, b } = action;
       if (a.playerId === b.playerId && a.slot === b.slot) return fail("Pick two different cards.");
       const ga = swapGuard(s, a);
@@ -621,15 +624,8 @@ export function applyAction(
       const gb = swapGuard(s, b);
       if (gb) return fail(gb);
 
-      if (power === "blindSwap") {
-        const mine = [a, b].filter((r) => r.playerId === action.playerId);
-        const theirs = [a, b].filter((r) => r.playerId !== action.playerId);
-        if (mine.length !== 1 || theirs.length !== 1) {
-          return fail("A blind swap trades one of your cards for one of an opponent's.");
-        }
-      }
-
       doSwap(s, a, b);
+      s.lastSwap = { id: s.nextSwapId++, a, b };
       const pa = mustPlayer(s, a.playerId);
       const pb = mustPlayer(s, b.playerId);
       log(

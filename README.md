@@ -62,7 +62,7 @@ Open <http://localhost:5173>. To play several players locally, add `?seat=2`,
 browser.
 
 ```bash
-npm test          # 57 rule tests
+npm test          # 58 rule tests
 npm run typecheck # client and worker are typechecked separately
 ```
 
@@ -87,7 +87,7 @@ Standard 52-card deck, four cards each, lowest hand wins the round.
 | 2–6 | face | — |
 | 7, 8 | 7, 8 | Peek at one of your own cards |
 | 9, 10 | 9, 10 | Spy one opponent card |
-| J | 11 | Blind swap — one of yours for one of theirs, unseen |
+| J | 11 | Blind swap — any two cards on the board, unseen |
 | Q | 12 | Look at any 1 card, then swap any 2 cards on the board |
 | K♠ K♣ | 13 | Look at any 2 cards, then swap any 2 cards |
 | K♥ K♦ | **−1** | none — the prize card |

@@ -214,20 +214,14 @@ describe("power resolution", () => {
     expect(known(s, "a")).toContain("3H");
   });
 
-  it("J blind-swaps exactly one of yours for one of theirs", () => {
+  it("J blind-swaps any two cards on the board, unseen", () => {
     let s = table({ a: [C("9C"), C("3S"), C("4S"), C("5S")], b: [C("2H"), C("3H"), C("4H"), C("5H")] }, {
       deck: [C("JD")],
     });
     s = act(s, { type: "drawFromDeck", playerId: "a" });
     s = act(s, { type: "discardDrawn", playerId: "a", usePower: true });
-    // two of your own is not a blind swap
-    expect(
-      err(applyAction(s, {
-        type: "powerSwap", playerId: "a",
-        a: { playerId: "a", slot: 0 }, b: { playerId: "a", slot: 1 },
-      })),
-    ).toMatch(/one of your cards for one of an opponent/i);
 
+    // yours-for-theirs still works
     s = act(s, {
       type: "powerSwap", playerId: "a",
       a: { playerId: "a", slot: 0 }, b: { playerId: "b", slot: 0 },
@@ -236,6 +230,29 @@ describe("power resolution", () => {
     expect(s.players[1]!.slots[0]!.id).toBe("9C");
     // neither side learns the card they received
     expect(known(s, "a")).not.toContain("2H");
+    // the swap itself is recorded for client-side animation
+    expect(s.lastSwap).toEqual({
+      id: expect.any(Number),
+      a: { playerId: "a", slot: 0 },
+      b: { playerId: "b", slot: 0 },
+    });
+  });
+
+  it("J can also swap two of your own cards, or two opponents' cards", () => {
+    let s = table(
+      { a: [C("9C"), C("3S"), C("4S"), C("5S")], b: [C("2H"), C("3H"), C("4H"), C("5H")], c: [C("6C"), C("7C"), C("8C"), C("9S")] },
+      { deck: [C("JD")] },
+    );
+    s = act(s, { type: "drawFromDeck", playerId: "a" });
+    s = act(s, { type: "discardDrawn", playerId: "a", usePower: true });
+
+    // two of your own is no longer blocked
+    s = act(s, {
+      type: "powerSwap", playerId: "a",
+      a: { playerId: "a", slot: 0 }, b: { playerId: "a", slot: 1 },
+    });
+    expect(s.players[0]!.slots[0]!.id).toBe("3S");
+    expect(s.players[0]!.slots[1]!.id).toBe("9C");
   });
 
   it("Q looks at any one card then swaps any two on the board", () => {

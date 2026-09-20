@@ -51,7 +51,7 @@ export function cardName(card: Card): string {
 export type PowerKind =
   | "peekOwn" // 7, 8   - look at one of your own
   | "spyOther" // 9, 10  - look at one of an opponent's
-  | "blindSwap" // J      - trade one of yours for one of an opponent's, unseen
+  | "blindSwap" // J      - swap any 2 cards on the board, unseen
   | "look1swap2" // Q      - look at any 1 on the board, then swap any 2 on the board
   | "look2swap2"; // black K - look at any 2 on the board, then swap any 2 on the board
 
@@ -77,7 +77,7 @@ export function powerOf(card: Card): PowerKind | null {
 export const POWER_LABEL: Record<PowerKind, string> = {
   peekOwn: "Peek - look at one of your own cards",
   spyOther: "Spy - look at one opponent card",
-  blindSwap: "Blind swap - trade one of yours for one of theirs, unseen",
+  blindSwap: "Blind swap - swap any 2 cards on the board, unseen",
   look1swap2: "Look at any 1 card, then swap any 2 cards",
   look2swap2: "Look at any 2 cards, then swap any 2 cards",
 };

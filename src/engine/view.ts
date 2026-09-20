@@ -10,7 +10,7 @@ import {
   revealRemaining,
   topDiscard,
 } from "./engine";
-import { type GameState, type LogEntry, type Phase, INITIAL_PEEKS } from "./types";
+import { type GameState, type LogEntry, type Phase, type SwapEvent, INITIAL_PEEKS } from "./types";
 
 /**
  * A slot as one specific player is entitled to see it.
@@ -77,6 +77,7 @@ export interface GameView {
   revealAll: boolean;
   yourTurn: boolean;
   memoryMode: boolean;
+  lastSwap: SwapEvent | null;
 }
 
 function slotView(
@@ -153,6 +154,7 @@ export function buildView(s: GameState, viewerId: string, now: number = Date.now
     revealAll: reveal,
     yourTurn: current === viewerId && s.caboCallerId !== viewerId,
     memoryMode: s.memoryMode,
+    lastSwap: s.lastSwap,
   };
 }
 

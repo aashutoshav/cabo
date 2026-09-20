@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { POWER_LABEL, cardValue, powerOf } from "../engine/cards";
-import { REVEAL_MS, type SlotRef } from "../engine/types";
+import { REVEAL_MS, type SlotRef, type SwapEvent } from "../engine/types";
 import type { GameView, PlayerView, SlotView } from "../engine/view";
 import { prettyKey } from "./App";
 import { CardFace, PowerBadge, Slot } from "./CardFace";
+import { isSoundEnabled, playSound, setSoundEnabled, type SoundKind } from "./sound";
 import type { Room } from "./useRoom";
 
 interface TableProps {
@@ -26,12 +27,74 @@ type Mode =
 const sameRef = (a: SlotRef | null, b: SlotRef) =>
   !!a && a.playerId === b.playerId && a.slot === b.slot;
 
+/** Sound to play for a freshly-arrived log line, or null if it already has its own cue. */
+function soundForLogText(text: string): SoundKind | null {
+  if (/ SNAPS /.test(text)) return "snapHit";
+  if (/ MISSES /.test(text)) return "snapMiss";
+  if (/calls CABO/.test(text)) return "cabo";
+  // A power-swap's own log line is already covered by the swap-flash animation/sound.
+  if (/'s slot \d+ with .+'s slot \d+\.$/.test(text)) return null;
+  if (/swaps into slot/.test(text)) return "discard";
+  if (/discards/.test(text)) return "discard";
+  if (/draws from the deck/.test(text)) return "draw";
+  if (/takes .+ from the discard/.test(text)) return "draw";
+  if (/looks at/.test(text)) return "power";
+  return null;
+}
+
 export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
   const { view, receivedAt, conn, error, clearError, send } = room;
   const [snapArmed, setSnapArmed] = useState(false);
   const [swapFirst, setSwapFirst] = useState<SlotRef | null>(null);
   const [copied, setCopied] = useState(false);
   const [showLog, setShowLog] = useState(false);
+  const [soundOn, setSoundOn] = useState(isSoundEnabled);
+  const [flashSwap, setFlashSwap] = useState<SwapEvent | null>(null);
+  const seenSwapId = useRef<number | null | undefined>(undefined);
+  const seenLogId = useRef<number | null>(null);
+
+  const toggleSound = () => {
+    setSoundOn((on) => {
+      setSoundEnabled(!on);
+      return !on;
+    });
+  };
+
+  // Flash the two swapped slots once, and give it a sound cue.
+  useEffect(() => {
+    const swap = view?.lastSwap ?? null;
+    if (seenSwapId.current === undefined) {
+      seenSwapId.current = swap?.id ?? null;
+      return;
+    }
+    if (swap && swap.id !== seenSwapId.current) {
+      seenSwapId.current = swap.id;
+      setFlashSwap(swap);
+      playSound("swap");
+      const t = setTimeout(() => setFlashSwap(null), 900);
+      return () => clearTimeout(t);
+    }
+  }, [view?.lastSwap]);
+
+  // Small sound cues for other actions, driven off new log lines so everyone
+  // at the table hears the same things, not just whoever clicked.
+  useEffect(() => {
+    if (!view) return;
+    const entries = view.log;
+    if (entries.length === 0) return;
+    const newestId = entries[entries.length - 1]!.id;
+    if (seenLogId.current === null) {
+      seenLogId.current = newestId;
+      return;
+    }
+    if (newestId === seenLogId.current) return;
+    const fresh = entries.filter((e) => e.id > (seenLogId.current as number));
+    seenLogId.current = newestId;
+    for (const entry of fresh) {
+      const kind = soundForLogText(entry.text);
+      if (kind) playSound(kind);
+    }
+  }, [view?.log]);
 
   // Disarm the snap button the moment the window shuts.
   useEffect(() => {
@@ -132,11 +195,6 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
       case "powerSwap": {
         if (view.pending.kind !== "power") return false;
         if (owner.calledCabo) return false; // locked hand, either direction
-        if (view.pending.power === "blindSwap") {
-          if (!swapFirst) return true;
-          const firstIsMine = swapFirst.playerId === view.youId;
-          return firstIsMine ? !owner.isYou : owner.isYou;
-        }
         return true;
       }
       default:
@@ -224,6 +282,10 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
 
   const drawnCard = view.pending.kind === "drawn" ? view.pending.card : null;
   const drawnFromDiscard = view.pending.kind === "drawn" && view.pending.from === "discard";
+  const isSwapping = (playerId: string, slot: number) =>
+    !!flashSwap &&
+    ((flashSwap.a.playerId === playerId && flashSwap.a.slot === slot) ||
+      (flashSwap.b.playerId === playerId && flashSwap.b.slot === slot));
 
   return (
     <div className="table-shell">
@@ -237,6 +299,13 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
           <span className={`conn conn-${conn}`} title={conn}>
             {conn === "open" ? "live" : conn === "connecting" ? "connecting" : "offline"}
           </span>
+          <button
+            className="btn btn-ghost"
+            onClick={toggleSound}
+            title={soundOn ? "Mute sound effects" : "Unmute sound effects"}
+          >
+            {soundOn ? "Sound: on" : "Sound: off"}
+          </button>
           <button className="btn btn-ghost" onClick={() => setShowLog((v) => !v)}>Log</button>
           <button className="btn btn-ghost" onClick={onShowRules}>Rules</button>
           <button className="btn btn-ghost" onClick={onLeave}>Leave</button>
@@ -262,6 +331,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
             isSelectable={isSelectable}
             onSlotClick={onSlotClick}
             swapFirst={swapFirst}
+            isSwapping={isSwapping}
           />
         ))}
       </section>
@@ -325,6 +395,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
             isSelectable={isSelectable}
             onSlotClick={onSlotClick}
             swapFirst={swapFirst}
+            isSwapping={isSwapping}
           />
         </section>
       )}
@@ -378,9 +449,10 @@ interface HandPanelProps {
   isSelectable: (p: PlayerView, i: number) => boolean;
   onSlotClick: (p: PlayerView, i: number) => void;
   swapFirst: SlotRef | null;
+  isSwapping: (playerId: string, slot: number) => boolean;
 }
 
-function HandPanel({ player, view, small, elapsed, isSelectable, onSlotClick, swapFirst }: HandPanelProps) {
+function HandPanel({ player, view, small, elapsed, isSelectable, onSlotClick, swapFirst, isSwapping }: HandPanelProps) {
   const locked = player.calledCabo;
   return (
     <div
@@ -415,6 +487,7 @@ function HandPanel({ player, view, small, elapsed, isSelectable, onSlotClick, sw
             locked={locked && view.phase === "playing"}
             selectable={isSelectable(player, i)}
             selected={sameRef(swapFirst, { playerId: player.id, slot: i })}
+            swapping={isSwapping(player.id, i)}
             countdown={
               slot.state === "known" && slot.hidesInMs !== null
                 ? Math.min(1, Math.max(0, slot.hidesInMs - elapsed) / REVEAL_MS)

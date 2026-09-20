@@ -42,9 +42,21 @@ export interface SlotProps {
   small?: boolean;
   /** Fraction of the reveal window left (1 -> 0), or null if it never hides. */
   countdown?: number | null;
+  /** Briefly true right after this slot took part in a power-swap. */
+  swapping?: boolean;
 }
 
-export function Slot({ slot, index, selectable, selected, locked, onClick, small, countdown }: SlotProps) {
+export function Slot({
+  slot,
+  index,
+  selectable,
+  selected,
+  locked,
+  onClick,
+  small,
+  countdown,
+  swapping,
+}: SlotProps) {
   if (slot.state === "empty") {
     return (
       <div className={`slot slot-empty ${small ? "slot-sm" : ""}`} title="Shed - gone for good">
@@ -59,6 +71,7 @@ export function Slot({ slot, index, selectable, selected, locked, onClick, small
     selectable ? "slot-selectable" : "",
     selected ? "slot-selected" : "",
     locked ? "slot-locked" : "",
+    swapping ? "slot-swapped" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -96,7 +109,7 @@ export function PowerBadge({ card }: { card: Card }) {
   const label: Record<string, string> = {
     peekOwn: "Peek own",
     spyOther: "Spy",
-    blindSwap: "Blind swap",
+    blindSwap: "Swap any 2, unseen",
     look1swap2: "Look 1, swap 2",
     look2swap2: "Look 2, swap 2",
   };
