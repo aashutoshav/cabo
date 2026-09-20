@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { Card } from "../engine/cards";
 import { SUIT_SYMBOL, cardValue, isRed, powerOf } from "../engine/cards";
 import type { SlotView } from "../engine/view";
@@ -44,6 +45,10 @@ export interface SlotProps {
   countdown?: number | null;
   /** Briefly true right after this slot took part in a power-swap. */
   swapping?: boolean;
+  /** Identifies this slot so the swap-flight animation can find it in the DOM. */
+  swapKey?: string;
+  /** Transform/transition driving the swap-flight animation, if one is in progress. */
+  flightStyle?: CSSProperties;
 }
 
 export function Slot({
@@ -56,6 +61,8 @@ export function Slot({
   small,
   countdown,
   swapping,
+  swapKey,
+  flightStyle,
 }: SlotProps) {
   if (slot.state === "empty") {
     return (
@@ -78,6 +85,8 @@ export function Slot({
     <button
       type="button"
       className={cls}
+      data-swap-key={swapKey}
+      style={flightStyle}
       onClick={selectable ? onClick : undefined}
       disabled={!selectable}
       aria-label={

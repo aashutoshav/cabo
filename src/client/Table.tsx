@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { POWER_LABEL, cardValue, powerOf } from "../engine/cards";
 import { REVEAL_MS, type SlotRef, type SwapEvent } from "../engine/types";
 import type { GameView, PlayerView, SlotView } from "../engine/view";
@@ -27,6 +27,17 @@ type Mode =
 const sameRef = (a: SlotRef | null, b: SlotRef) =>
   !!a && a.playerId === b.playerId && a.slot === b.slot;
 
+const swapKeyOf = (playerId: string, slot: number) => `${playerId}:${slot}`;
+
+/** One card's half of a swap-flight: where it visually starts, relative to its resting slot. */
+interface SwapLeg {
+  key: string;
+  dx: number;
+  dy: number;
+  /** false = pinned at the start offset (no transition yet); true = animating home. */
+  settled: boolean;
+}
+
 /** Sound to play for a freshly-arrived log line, or null if it already has its own cue. */
 function soundForLogText(text: string): SoundKind | null {
   if (/ SNAPS /.test(text)) return "snapHit";
@@ -50,6 +61,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
   const [showLog, setShowLog] = useState(false);
   const [soundOn, setSoundOn] = useState(isSoundEnabled);
   const [flashSwap, setFlashSwap] = useState<SwapEvent | null>(null);
+  const [flight, setFlight] = useState<SwapLeg[] | null>(null);
   const seenSwapId = useRef<number | null | undefined>(undefined);
   const seenLogId = useRef<number | null>(null);
 
@@ -60,20 +72,50 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
     });
   };
 
-  // Flash the two swapped slots once, and give it a sound cue.
+  // Flash the two swapped slots once, and fly each card across the table to
+  // where the other one was - a real swap, not just a highlight.
   useEffect(() => {
     const swap = view?.lastSwap ?? null;
     if (seenSwapId.current === undefined) {
       seenSwapId.current = swap?.id ?? null;
       return;
     }
-    if (swap && swap.id !== seenSwapId.current) {
-      seenSwapId.current = swap.id;
-      setFlashSwap(swap);
-      playSound("swap");
-      const t = setTimeout(() => setFlashSwap(null), 900);
-      return () => clearTimeout(t);
+    if (!swap || swap.id === seenSwapId.current) return;
+    seenSwapId.current = swap.id;
+    playSound("swap");
+    setFlashSwap(swap);
+    const tFlash = setTimeout(() => setFlashSwap(null), 900);
+
+    const keyA = swapKeyOf(swap.a.playerId, swap.a.slot);
+    const keyB = swapKeyOf(swap.b.playerId, swap.b.slot);
+    const elA = document.querySelector(`[data-swap-key="${CSS.escape(keyA)}"]`);
+    const elB = document.querySelector(`[data-swap-key="${CSS.escape(keyB)}"]`);
+    let raf1: number | undefined;
+    let raf2: number | undefined;
+    let tClear: number | undefined;
+    if (elA && elB) {
+      const rA = elA.getBoundingClientRect();
+      const rB = elB.getBoundingClientRect();
+      // Each card starts offset at the other's spot, then transitions to translate(0) -
+      // i.e. it visually arrives home from wherever the other card was.
+      setFlight([
+        { key: keyA, dx: rB.left - rA.left, dy: rB.top - rA.top, settled: false },
+        { key: keyB, dx: rA.left - rB.left, dy: rA.top - rB.top, settled: false },
+      ]);
+      // Two rAFs so the browser paints the start offset before the transition begins.
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          setFlight((f) => f && f.map((leg) => ({ ...leg, settled: true })));
+        });
+      });
+      tClear = window.setTimeout(() => setFlight(null), 520);
     }
+    return () => {
+      clearTimeout(tFlash);
+      if (raf1 !== undefined) cancelAnimationFrame(raf1);
+      if (raf2 !== undefined) cancelAnimationFrame(raf2);
+      if (tClear !== undefined) clearTimeout(tClear);
+    };
   }, [view?.lastSwap]);
 
   // Small sound cues for other actions, driven off new log lines so everyone
@@ -286,6 +328,16 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
     !!flashSwap &&
     ((flashSwap.a.playerId === playerId && flashSwap.a.slot === slot) ||
       (flashSwap.b.playerId === playerId && flashSwap.b.slot === slot));
+  const flightStyleFor = (playerId: string, slot: number): CSSProperties | undefined => {
+    const leg = flight?.find((l) => l.key === swapKeyOf(playerId, slot));
+    if (!leg) return undefined;
+    return {
+      transform: leg.settled ? "translate(0, 0)" : `translate(${leg.dx}px, ${leg.dy}px)`,
+      transition: leg.settled ? "transform 0.46s cubic-bezier(0.2, 0.7, 0.2, 1)" : "none",
+      position: "relative",
+      zIndex: 6,
+    };
+  };
 
   return (
     <div className="table-shell">
@@ -332,6 +384,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
             onSlotClick={onSlotClick}
             swapFirst={swapFirst}
             isSwapping={isSwapping}
+            flightStyleFor={flightStyleFor}
           />
         ))}
       </section>
@@ -396,6 +449,7 @@ export function Table({ room, roomKey, onLeave, onShowRules }: TableProps) {
             onSlotClick={onSlotClick}
             swapFirst={swapFirst}
             isSwapping={isSwapping}
+            flightStyleFor={flightStyleFor}
           />
         </section>
       )}
@@ -450,9 +504,20 @@ interface HandPanelProps {
   onSlotClick: (p: PlayerView, i: number) => void;
   swapFirst: SlotRef | null;
   isSwapping: (playerId: string, slot: number) => boolean;
+  flightStyleFor: (playerId: string, slot: number) => CSSProperties | undefined;
 }
 
-function HandPanel({ player, view, small, elapsed, isSelectable, onSlotClick, swapFirst, isSwapping }: HandPanelProps) {
+function HandPanel({
+  player,
+  view,
+  small,
+  elapsed,
+  isSelectable,
+  onSlotClick,
+  swapFirst,
+  isSwapping,
+  flightStyleFor,
+}: HandPanelProps) {
   const locked = player.calledCabo;
   return (
     <div
@@ -488,6 +553,8 @@ function HandPanel({ player, view, small, elapsed, isSelectable, onSlotClick, sw
             selectable={isSelectable(player, i)}
             selected={sameRef(swapFirst, { playerId: player.id, slot: i })}
             swapping={isSwapping(player.id, i)}
+            swapKey={swapKeyOf(player.id, i)}
+            flightStyle={flightStyleFor(player.id, i)}
             countdown={
               slot.state === "known" && slot.hidesInMs !== null
                 ? Math.min(1, Math.max(0, slot.hidesInMs - elapsed) / REVEAL_MS)
